@@ -12,7 +12,6 @@
   "dependencies": {
     "@google-cloud/storage": "^1.7.0",
     "busboy": "^0.2.14",
-    "busboy-body-parser": "^0.3.2",
     "child-process-promise": "^2.2.1",
     "cors": "^2.8.4",
     "firebase-admin": "^5.12.1",
@@ -21,7 +20,6 @@
     "md5": "^2.2.1",
     "mkdirp": "^0.5.1",
     "mkdirp-promise": "^5.0.1",
-    "querystring": "^0.2.0",
     "util": "^0.11.0",
     "uuid-v4": "^0.1.0"
   },
