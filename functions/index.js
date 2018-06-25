@@ -121,7 +121,8 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
       let fieldArray=[]
       let uploadData = null;
       var ref = db.ref("users");  
-      
+      let fileId=''
+      let  newFileName=""
       busboy.on('file', (fieldname, file, filename, encoding, mimetype)=> {
         const filepath = path.join(os.tmpdir(), filename);
         uploadData = { file: filepath, 
@@ -178,7 +179,11 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
           let  uuid = UUID();
           const bucket = gcs.bucket(STORAGE_URL);
        //   console.log('----  bucket.upload ->  **** uploadData',uploadData)
+     
+       fileId =md5( uploadData.uid+encodeURIComponent(uploadData.file)+Date.now().toString()) 
+        newFileName = fileId+ path.extname(uploadData.file);
         bucket.upload(uploadData.file, {
+          destination: uploadData.uid+"/" + newFileName,
            uploadType: "media",
            metadata: {
              metadata: {
@@ -190,7 +195,7 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
         .then((data) => {
         console.log('----  bucket.upload ->  **** data',data[0])
            let file = data[0];
-           let fileId=md5( uploadData.uid+encodeURIComponent(file.name)+Date.now().toString()) 
+          
            const downloadURL="https://firebasestorage.googleapis.com/v0/b/" + bucket.name + "/o/" + encodeURIComponent(file.name) + "?alt=media&token=" + uuid;
           
            // handle url 
@@ -207,9 +212,21 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
             
              filesRef.update({
                'url':downloadURL,
-               'eventID':uploadData.eventID
+               'eventID':uploadData.eventID,
+               'filename': newFileName,
+               'originalname': path.basename(uploadData.file)
              });
              console.log('----  bucket.upload ->  **** filesRef',downloadURL)
+
+            //write to "uploads" node
+             var uploadsRef = ref.parent.child('uploads').child(uploadData.uid).child(uploadData.eventID).child(fileId);
+            
+             uploadsRef.update({
+               'url':downloadURL,
+               'originalname': path.basename(uploadData.file),
+               'filename': newFileName
+             });
+             console.log('----  bucket.upload ->  **** uploadsRef',file.name)
      
             return res.status(200).json({
               message: "It worked!"
@@ -235,7 +252,7 @@ const JPEG_EXTENSION = '.jpg';
  * When an image is uploaded in the Storage bucket it is converted to JPEG automatically using
  * ImageMagick.
  */
-/*
+
 exports.imageToJPG = functions.storage.object().onFinalize((object) => {
   const filePath = object.name;
   const baseFileName = path.basename(filePath, path.extname(filePath));
@@ -278,4 +295,3 @@ exports.imageToJPG = functions.storage.object().onFinalize((object) => {
     return;
   });
 });
-*/
