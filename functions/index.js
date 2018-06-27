@@ -9,8 +9,11 @@ const Busboy = require('busboy');
 var admin = require("firebase-admin");
 const UUID = require("uuid-v4");
 const inspect = require('util').inspect;
-const { parse } = require('querystring');
+
 const md5 = require('md5');
+
+const sizeOf = require('image-size')
+
 const STORAGE_URL ="eventphotogallery-ed881.appspot.com"
 const PROJECT_ID='eventphotogallery-ed881'
 const PROJECT_PRIVATEKEY_FILE='eventphotogallery.json'
@@ -22,29 +25,36 @@ const gcconfig={
 }
 const gcs = require('@google-cloud/storage')(gcconfig);
 
+
 // Initialize the app with a service account, granting admin privileges
 admin.initializeApp({
   credential: admin.credential.cert(gcconfig.keyFilename),
   databaseURL:DATABASE_URL
 });
 const  db = admin.database();
-const storageRef=admin.storage();
+//const storageRef=admin.storage();
 
-exports.onFileChange= functions.storage.object().onFinalize(object => {
+let form_uid="";
+let form_eventID="";
+
+exports.onCreateThumbnails= functions.storage.object().onFinalize(object => {
     const bucket = object.bucket;
     const contentType = object.contentType;
     const filePath = object.name;
-    console.log('File change detected, function execution started');
+ 
+    console.log('File change detected, function execution started path.basename(filePath)=',path.basename(filePath));
 
     if (object.resourceState === 'not_exists') {
         console.log('We deleted a file, exit...');
         return;
     }
 
-    if (path.basename(filePath).startsWith('resized-')) {
+    if (path.basename(filePath).startsWith('thumb_')) {
         console.log('We already renamed that file!');
         return;
     }
+    let form_uid='';
+    let eventID='';
     let uuid = UUID();
     const destBucket = gcs.bucket(bucket);
     const tmpFilePath = path.join(os.tmpdir(), path.basename(filePath));
@@ -53,50 +63,74 @@ exports.onFileChange= functions.storage.object().onFinalize(object => {
                         firebaseStorageDownloadTokens: uuid
                       }
                    };
+    let fileId=path.parse(filePath).name;//returns fileId from filename
+    var tmpRef = db.ref('tmp').child(fileId);
+    let thumbFilename='thumb_' + path.basename(filePath);
+    tmpRef.once("value", (data)=> {
+
+      form_uid=data.val().uid;
+      eventID=data.val().eventID;
+
+      thumbFilename=form_uid+'/'+thumbFilename
     
+    })
+    console.log('thumbFilename=',thumbFilename);
+
      return destBucket
         .file(filePath)
         .download({
             destination: tmpFilePath
         }).then(() => {
             return spawn('convert', [tmpFilePath, '-resize', '500x500', tmpFilePath]);
-        }).then(() => {
-            //save
-      //    console.log("tmpFilePath=",tmpFilePath);
-       //   console.log("metadata=",metadata);
-           return destBucket.upload(tmpFilePath, {
-            destination: 'resized-' + path.basename(filePath),
-            metadata: metadata
-            });
+        }).then(()=>{
+            console.log("destination thumbFilename=",thumbFilename)
+            return destBucket.upload(tmpFilePath, {
+              destination:  thumbFilename,
+              metadata: metadata
+              });
           }).then((data) => {
           let file = data[0];
-          userUID=path.parse(filePath).name;
-          let uid=userUID.substring(0,userUID.indexOf('_ID'))
-          console.log("file.name =",file.name); //resized-kMhtzqVUGTXEilsPqriUwTV6O1t1_ID.jpg
-          console.log("uid =",uid);
+     
+          console.log("file.name =",file.name); //thumb_kMhtzqVUGTXEilsPqriUwTV6O1t1.jpg
+          console.log("form_uid =",form_uid); //user id
+          console.log("eventID =",eventID);   //
+          console.log("fileId =",fileId);   //
+       
           const img_thumb_url = 'https://firebasestorage.googleapis.com/v0/b/'+ destBucket.name + '/o/'
           + encodeURIComponent(file.name)
           + '?alt=media&token='
           + uuid
 
           console.log("img_thumb_url =",img_thumb_url);
-          //Save to realtime db /users/$uid/
-          var ref = db.ref("users"); 
-          var userFilesRef = ref.child(uid);
-          userFilesRef.update({
-            'photoUrlIdThumb':img_thumb_url,
+
+          //Save to realtime db /uploads/$uid/$event/$fileid
+
+          var dimensions = sizeOf(tmpFilePath);
+          console.log("dimensions.width= ",dimensions.width," height=", dimensions.height);
+          let w=3
+          let h=2
+          if( dimensions.height>dimensions.width){
+              w=2
+              h=3
+          }  
+          var uploadsRef = db.ref("uploads").child(form_uid).child(eventID).child(fileId);
+          uploadsRef.update({
+            'thumbnailUrl':img_thumb_url,
+            'height':h,
+            'width':w
           });
 
-          var thumbRef = storageRef.child(file.name);
-          thumbRef.getDownloadURL().then((url)=> {
-            console.log("getDownloadURL =",url);
-            return url;
-          }).catch((error)=> {
-            console.log(error)
+          var filesRef = db.ref('files').child(form_uid).child(fileId);
+          //Save to realtime db /files/$uid/fileID
+          filesRef.update({
+            'thumbnailUrl': img_thumb_url,
+            'height':h,
+            'width':w
           });
 
+         
+ 
 
-    
         return data;
 
      }).catch(err =>{
@@ -104,8 +138,7 @@ exports.onFileChange= functions.storage.object().onFinalize(object => {
      });
 });
 
-let form_uid="";
-let form_eventID="";
+
 
 exports.uploadFile = functions.https.onRequest((req, res) => {
     cors(req, res, () => {
@@ -120,7 +153,7 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
       let parsingType="";
       let fieldArray=[]
       let uploadData = null;
-      var ref = db.ref("users");  
+    
       let fileId=''
       let  newFileName=""
       busboy.on('file', (fieldname, file, filename, encoding, mimetype)=> {
@@ -132,22 +165,7 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
         file.pipe(fs.createWriteStream(filepath));
         
         parsingType='File';
-      //  console.log('File [' + fieldname + ']: filename: ' + filename);
-      /*  file.on('data', (data)=> {
-     //     console.log('File [' + fieldname + '] got ' + data.length + ' bytes');
      
-          const filepath = path.join(os.tmpdir(), filename);
-          uploadData = { file: filepath, 
-                         type: mimetype,
-                         uid:form_uid, 
-                         eventID:form_eventID };
-          file.pipe(fs.createWriteStream(filepath));
-
-        });
-        file.on('end',()=> {
-       //   console.log('File [' + fieldname + '] Finished');
-          parsingType='File';
-        });*/
       });
       busboy.on('field', (fieldname, val, fieldnameTruncated, valTruncated)=> {
        // console.log('Field [' + fieldname + ']: value: ' + inspect(val));
@@ -170,6 +188,7 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
         //  console.log('formParams =',formParams)
           form_uid=formParams.uid;
           form_eventID=formParams.eventID;
+
           return res.status(304).json({
             message: "It worked!"
           });
@@ -201,25 +220,23 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
            // handle url 
            console.log('----  bucket.upload ->  **** uid',uploadData.uid)
           
-             var userFilesRef = ref.child(uploadData.uid);
-             userFilesRef.update({
-               'photoUrlId':downloadURL,
-               'photoUrlFileId':fileId
-             });
-             console.log(fileId,'----  bucket.upload ->  **** userFilesRef',uploadData.eventID)
+           
      
-             var filesRef = ref.parent.child('files').child(uploadData.uid).child(fileId);
-            
+             var filesRef = db.ref('files').child(uploadData.uid).child(fileId);
+             var dimensions = sizeOf(uploadData.file);
              filesRef.update({
                'url':downloadURL,
                'eventID':uploadData.eventID,
                'filename': newFileName,
-               'originalname': path.basename(uploadData.file)
+               'originalname': path.basename(uploadData.file),
+               'file_height':dimensions.height,
+               'file_width':dimensions.width
+
              });
              console.log('----  bucket.upload ->  **** filesRef',downloadURL)
-
+           
             //write to "uploads" node
-             var uploadsRef = ref.parent.child('uploads').child(uploadData.uid).child(uploadData.eventID).child(fileId);
+             var uploadsRef = db.ref('uploads').child(uploadData.uid).child(uploadData.eventID).child(fileId);
             
              uploadsRef.update({
                'url':downloadURL,
@@ -227,7 +244,15 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
                'filename': newFileName
              });
              console.log('----  bucket.upload ->  **** uploadsRef',file.name)
-     
+        
+             //write tmp folder uid
+             var tmpRef = db.ref('tmp').child(fileId);
+            
+             tmpRef.update({
+               'uid':form_uid,
+               'eventID': uploadData.eventID,
+             });
+
             return res.status(200).json({
               message: "It worked!"
             });
